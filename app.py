@@ -1,288 +1,7 @@
-
-import streamlit as st
-import os, json, time, base64, tempfile, io, re, ast
-import requests, fitz, pycountry, pytesseract, pdfplumber
-from PyPDF2 import PdfReader, PdfWriter
-from PyPDF2.generic import NameObject, BooleanObject
-from pdf2image import convert_from_bytes
-from dotenv import load_dotenv
-from groq import Groq
-from google.colab import files
-
-# Load environment variables
-load_dotenv()
-GROQ_API_KEY = "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"
-groq_client = Groq(api_key=GROQ_API_KEY)
-SERPER_API_KEY = "eda2304d1c64119adc895570dbeae09f2a1cc07a"
-# client = Groq(api_key=os.environ["GROQ_API_KEY"])
-MODEL = "llama3-8b-8192"
-def extract_text_from_pdf(file_bytes):
-    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-        return "\n".join(page.extract_text() or "" for page in pdf.pages)
-
-def extract_text_with_ocr(file_bytes):
-    images = convert_from_bytes(file_bytes)
-    return "\n".join(pytesseract.image_to_string(img) for img in images)
-
-def extract_labels_from_text(file_bytes):
-    labels = set()
-    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-        for page in pdf.pages:
-            text = page.extract_text() or ""
-            for line in text.splitlines():
-                matches = re.findall(r"(?:\d+\.\s*)?([A-Za-z\s\/\(\)]+):", line)
-                for match in matches:
-                    clean = match.strip()
-                    if len(clean) > 1:
-                        labels.add(clean)
-    return list(labels)
-
-def extract_info_from_text(text, field_names):
-    data = {}
-    for line in text.splitlines():
-        for field in field_names:
-            pattern = re.compile(rf"{re.escape(field)}\s*:\s*(.*)", re.IGNORECASE)
-            match = pattern.search(line)
-            if match:
-                data[field] = match.group(1).strip()
-    print("data",data)
-    return data
-
-# def extract_all_fields_from_text(text):
-#     """
-#     Extract key-value pairs from bullet-style text with detailed logging.
-#     Supports colon-separated, dotted-line, and space-separated key-value formats.
-#     """
-#     data = {}
-#     print("🔍 Starting field extraction...")
-
-#     for line in text.splitlines():
-#         original_line = line
-#         line = line.strip("• ").strip()
-#         if not line:
-#             continue
-
-#         print(f"\n📄 Processing line: '{original_line}'")
-
-#         # Try to match colon-separated (e.g., Name: Ali)
-#         match_colon = re.match(r"^([A-Za-z\s\/\(\)\[\]\-\.]+?)[:：]\s*(.+)$", line)
-#         if match_colon:
-#             label = match_colon.group(1).strip()
-#             value = match_colon.group(2).strip()
-#             data[label] = value
-#             print(f"✅ Matched colon format → '{label}': '{value}'")
-#             continue
-
-#         # Try to match dotted-line-separated (e.g., Name........Ali)
-#         match_dots = re.match(r"^([A-Za-z\s\/\(\)\[\]\-\.]+?)\s*[\.\-]{2,}\s*(.+)$", line)
-#         if match_dots:
-#             label = match_dots.group(1).strip()
-#             value = match_dots.group(2).strip()
-#             data[label] = value
-#             print(f"✅ Matched dotted-line format → '{label}': '{value}'")
-#             continue
-
-#         # Try space-separated pattern — first 1–4 words as label
-#         words = line.split()
-#         found = False
-#         for i in range(1, min(5, len(words))):
-#             label_candidate = " ".join(words[:i])
-#             value_candidate = " ".join(words[i:])
-#             if len(label_candidate) > 1 and len(value_candidate) > 1:
-#                 data[label_candidate] = value_candidate
-#                 print(f"✅ Matched space format → '{label_candidate}': '{value_candidate}'")
-#                 found = True
-#                 break
-
-#         if not found:
-#             print(f"⚠️ No match found for line: '{original_line}'")
-
-#     print("\n✅ Final parsed user data dictionary:", data)
-#     return data
-
-def extract_all_fields_from_text(text):
-    """
-    Extract key-value pairs from bullet-style text with detailed logging.
-    Fixes space-matching to preserve multi-word labels like 'Full Name'.
-    """
-    data = {}
-    print("🔍 Starting field extraction...")
-
-    for line in text.splitlines():
-        original_line = line
-        line = line.strip("• ").strip()
-        if not line:
-            continue
-
-        print(f"\n📄 Processing line: '{original_line}'")
-
-        # Colon-based format
-        match_colon = re.match(r"^([A-Za-z\s\/\(\)\[\]\-\.]+?)[:：]\s*(.+)$", line)
-        if match_colon:
-            label = match_colon.group(1).strip()
-            value = match_colon.group(2).strip()
-            data[label] = value
-            print(f"✅ Matched colon format → '{label}': '{value}'")
-            continue
-
-        # Dotted-line format
-        match_dots = re.match(r"^([A-Za-z\s\/\(\)\[\]\-\.]+?)\s*[\.\-]{2,}\s*(.+)$", line)
-        if match_dots:
-            label = match_dots.group(1).strip()
-            value = match_dots.group(2).strip()
-            data[label] = value
-            print(f"✅ Matched dotted-line format → '{label}': '{value}'")
-            continue
-
-        # Space-separated format — try longest match first
-        words = line.split()
-        found = False
-        for i in reversed(range(1, min(5, len(words)))):
-            label_candidate = " ".join(words[:i])
-            value_candidate = " ".join(words[i:])
-            if len(label_candidate) > 1 and len(value_candidate) > 1:
-                data[label_candidate] = value_candidate
-                print(f"✅ Matched space format → '{label_candidate}': '{value_candidate}'")
-                found = True
-                break
-
-        if not found:
-            print(f"⚠️ No match found for line: '{original_line}'")
-
-    print("\n✅ Final parsed user data dictionary:", data)
-    return data
-
-
-import ast
-import re
-
-def get_field_mapping_from_llm(form_fields, user_data):
-    print("form_fields:", form_fields)
-    print("user_data:", user_data)
-    prompt = f"""
-You are a form-filling assistant. Match the FORM FIELD NAMES with the closest values from USER DATA.
-
-FORM FIELDS:
-{form_fields}
-
-USER DATA (key-value pairs):
-{user_data}
-
-Return a Python dict that maps each FORM FIELD to:
-- The best matching USER DATA field name, or
-- A Python expression using user fields (e.g., "First Name + ' ' + Last Name"), or
-- `None` if no match is found.
-
-Example:
-{{
-  "Name of Candidate": "Full Name",
-  "Cell No": "Phone Number",
-  "CNIC No": "CNIC",
-  ...
-}}
-"""
-    response = groq_client.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": "You are a form-matching assistant."},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.2
-    )
-    content = response.choices[0].message.content.strip()
-    print("LLM Mapping Response:\n", content)
-
-    # Extract dictionary from the response text
-    match = re.search(r"\{.*\}", content, re.DOTALL)
-    if match:
-        dict_str = match.group(0)
-        try:
-            field_mapping = ast.literal_eval(dict_str)
-            print("Parsed field_mapping:", field_mapping)
-            return field_mapping
-        except Exception as e:
-            print("Error parsing dictionary:", e)
-    else:
-        print("No dictionary found in LLM response.")
-
-    return {}
-
-
-def reconstruct_user_data(field_mapping, raw_user_data):
-    print("field_mapping in reconstruct_user_data",field_mapping)
-    print("raw_user_data in reconstruct_user_data",raw_user_data)
-    final_data = {}
-    for form_field, user_key_expr in field_mapping.items():
-        if user_key_expr is None:
-            continue
-        try:
-            value = eval(user_key_expr, {}, raw_user_data)
-            print("value",value)
-        except Exception:
-            value = raw_user_data.get(user_key_expr) if isinstance(user_key_expr, str) else None
-        if value:
-            print
-            final_data[form_field] = value
-    return final_data
-
-def extract_acroform_fields(reader):
-    fields = reader.get_fields()
-    return list(fields.keys()) if fields else []
-
-def fill_pdf_acroform(template_bytes, user_data):
-    reader = PdfReader(io.BytesIO(template_bytes))
-    writer = PdfWriter()
-    for page in reader.pages:
-        writer.add_page(page)
-    writer.update_page_form_field_values(writer.pages[0], user_data)
-    writer._root_object.update({NameObject("/NeedAppearances"): BooleanObject(True)})
-    output_stream = io.BytesIO()
-    writer.write(output_stream)
-    output_stream.seek(0)
-    return output_stream
-
-def auto_fill_flat_pdf_smart(pdf_bytes, output_path, user_data):
-    coords_map = {}
-    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-        for i, page in enumerate(pdf.pages):
-            words = page.extract_words()
-            lines = {}
-            for w in words:
-                line_key = round(w['top'], 1)
-                lines.setdefault(line_key, []).append(w)
-
-            for label_key in user_data:
-                for line_top, line_words in lines.items():
-                    line_text = " ".join(word['text'] for word in line_words)
-                    if label_key.lower() in line_text.lower():
-                        first_label_word = label_key.split()[0].lower()
-                        for word in line_words:
-                            if word['text'].lower() == first_label_word:
-                                label_x1 = word['x1']
-                                label_top = word['top']
-                                break
-                        else:
-                            label_x1 = line_words[0]['x1']
-                            label_top = line_words[0]['top']
-                        insert_x = label_x1 + 50
-                        coords_map[label_key] = (i, insert_x, label_top)
-                        break
-
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    for key, value in user_data.items():
-        if key in coords_map:
-            page_num, x, y = coords_map[key]
-            page = doc[page_num]
-            rect = fitz.Rect(x, y, x + 150, y + 20)
-            page.draw_rect(rect, color=(1, 0, 0), width=0.5)
-            page.insert_text((x + 2, y + 2), str(value), fontsize=12, fontname="helv", color=(0, 0, 0))
-    doc.save(output_path)
-    files.download(output_path)
-
-
-    # =========================================
+# =========================================
 # 📋  CELL 2 — write the whole Streamlit app
 # =========================================
+%%writefile app.py
 import streamlit as st
 import os, json, time, base64, tempfile
 from io import BytesIO
@@ -295,10 +14,10 @@ from groq import Groq
 # ─────────────────────────────────────────
 # 🔐  load API keys
 # ─────────────────────────────────────────
-# load_dotenv()
-# SERPER_API_KEY = "0bf2fc534d73bd7c190fc4b856c1887951511984"
-# GROQ_API_KEY = "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"
-# groq_client = Groq(api_key=GROQ_API_KEY)
+load_dotenv()
+SERPER_API_KEY = "0bf2fc534d73bd7c190fc4b856c1887951511984"
+GROQ_API_KEY = "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"
+groq_client = Groq(api_key=GROQ_API_KEY)
 
 
 # ─────────────────────────────────────────
@@ -502,6 +221,22 @@ def find_pdf_in_html_page(url, html_content=None):
         st.error(f"Error finding PDF links: {str(e)}")
         return None
 
+# Display PDF safely with error handling
+def display_pdf(file_bytesio):
+    try:
+        file_bytesio.seek(0)
+        base64_pdf = base64.b64encode(file_bytesio.read()).decode('utf-8')
+        pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800" type="application/pdf"></iframe>'
+        st.markdown(pdf_display, unsafe_allow_html=True)
+        st.success("PDF loaded successfully!")
+        
+        # Add a direct download option for better user experience
+        file_bytesio.seek(0)
+    except Exception as e:
+        st.error(f"Error displaying PDF: {str(e)}")
+        st.info("If the PDF isn't displaying, you can try using the direct link.")
+
+
 # Extract interactive fields from PDF
 def extract_form_fields(file_bytesio):
     try:
@@ -586,6 +321,38 @@ def explain_form_fields(fields, country, form_name):
         st.error(f"Error explaining form fields: {str(e)}")
         return {}
 
+# Fill PDF form with user data
+def fill_pdf_form(file_bytesio, field_values):
+    try:
+        file_bytesio.seek(0)
+        doc = fitz.open(stream=file_bytesio, filetype="pdf")
+        
+        # Fill in the form fields
+        for page in doc:
+            widgets = page.widgets()
+            for widget in widgets:
+                field_name = widget.field_name
+                if field_name in field_values:
+                    widget.field_value = field_values[field_name]
+                    widget.update()
+        
+        # Save to a temporary file
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+        doc.save(temp_file.name)
+        doc.close()
+        
+        # Read the saved file back
+        with open(temp_file.name, "rb") as f:
+            filled_pdf = BytesIO(f.read())
+        
+        # Clean up
+        os.unlink(temp_file.name)
+        
+        return filled_pdf
+    except Exception as e:
+        st.error(f"Error filling form: {str(e)}")
+        return None
+
 # Add to search history
 def add_to_history(country, query, pdf_url=None):
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -598,6 +365,14 @@ def add_to_history(country, query, pdf_url=None):
     # Keep only the last 10 searches
     if len(st.session_state.search_history) > 10:
         st.session_state.search_history = st.session_state.search_history[-10:]
+
+# Get country code from name
+def get_country_code(country_name):
+    try:
+        country = pycountry.countries.get(name=country_name)
+        return country.alpha_2 if country else ""
+    except:
+        return ""
 
 # Function to suggest other forms
 def suggest_other_forms():
@@ -865,6 +640,186 @@ def find_pdf_in_html_page(url, html_content=None):
         st.error(f"Error finding PDF links: {str(e)}")
         return None
 
+# Display PDF safely with error handling
+def display_pdf(file_bytesio):
+    try:
+        file_bytesio.seek(0)
+        base64_pdf = base64.b64encode(file_bytesio.read()).decode('utf-8')
+        pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800" type="application/pdf"></iframe>'
+        st.markdown(pdf_display, unsafe_allow_html=True)
+        st.success("PDF loaded successfully!")
+        
+        # Add a direct download option for better user experience
+        file_bytesio.seek(0)
+    except Exception as e:
+        st.error(f"Error displaying PDF: {str(e)}")
+        st.info("If the PDF isn't displaying, you can try using the direct link.")
+
+
+# Extract interactive fields from PDF
+def extract_form_fields(file_bytesio):
+    try:
+        file_bytesio.seek(0)
+        doc = fitz.open(stream=file_bytesio, filetype="pdf")
+        
+        fields = []
+        widget_types = {
+            fitz.PDF_WIDGET_TYPE_TEXT: "Text Field",
+            fitz.PDF_WIDGET_TYPE_CHECKBOX: "Checkbox",
+            fitz.PDF_WIDGET_TYPE_RADIOBUTTON: "Radio Button",
+            fitz.PDF_WIDGET_TYPE_COMBOBOX: "Dropdown",
+            fitz.PDF_WIDGET_TYPE_LISTBOX: "List Box"
+        }
+        
+        for page_num, page in enumerate(doc):
+            widgets = page.widgets()
+            for widget in widgets:
+                field_type = widget_types.get(widget.field_type, "Unknown")
+                field_info = {
+                    "name": widget.field_name or f"Field_{page_num}_{len(fields)}",
+                    "type": field_type,
+                    "value": widget.field_value,
+                    "options": widget.choice_values if hasattr(widget, "choice_values") else None,
+                    "page": page_num + 1
+                }
+                fields.append(field_info)
+        
+        return fields
+    except Exception as e:
+        st.error(f"Error extracting form fields: {str(e)}")
+        return []
+
+# Use LLM to explain form fields
+def explain_form_fields(fields, country, form_name):
+    if not GROQ_API_KEY or not fields:
+        return {}
+        
+    try:
+        fields_json = json.dumps(fields, indent=2)
+        
+        prompt = f"""
+        These are form fields from a tax form ({form_name}) from {country}:
+        {fields_json}
+        
+        Please analyze these fields and:
+        1. Group them into logical sections (personal info, income, deductions, etc.)
+        2. Explain any technical tax terms in simple language
+        3. Identify which fields are mandatory vs. optional if possible
+        
+        Format your response as JSON with the following structure:
+        {{
+            "sections": [
+                {{
+                    "name": "section name",
+                    "fields": ["field1", "field2"],
+                    "explanation": "explanation of this section"
+                }}
+            ],
+            "key_terms": {{
+                "term1": "simple explanation",
+                "term2": "simple explanation"
+            }},
+            "mandatory_fields": ["field1", "field2"]
+        }}
+        """
+        
+        completion = groq_client.chat.completions.create(
+            model="llama3-8b-8192",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=1000
+        )
+        
+        try:
+            explanation = json.loads(completion.choices[0].message.content)
+            return explanation
+        except json.JSONDecodeError:
+            return {}
+            
+    except Exception as e:
+        st.error(f"Error explaining form fields: {str(e)}")
+        return {}
+
+# Fill PDF form with user data
+def fill_pdf_form(file_bytesio, field_values):
+    try:
+        file_bytesio.seek(0)
+        doc = fitz.open(stream=file_bytesio, filetype="pdf")
+        
+        # Fill in the form fields
+        for page in doc:
+            widgets = page.widgets()
+            for widget in widgets:
+                field_name = widget.field_name
+                if field_name in field_values:
+                    widget.field_value = field_values[field_name]
+                    widget.update()
+        
+        # Save to a temporary file
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+        doc.save(temp_file.name)
+        doc.close()
+        
+        # Read the saved file back
+        with open(temp_file.name, "rb") as f:
+            filled_pdf = BytesIO(f.read())
+        
+        # Clean up
+        os.unlink(temp_file.name)
+        
+        return filled_pdf
+    except Exception as e:
+        st.error(f"Error filling form: {str(e)}")
+        return None
+
+# Add to search history
+def add_to_history(country, query, pdf_url=None):
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    st.session_state.search_history.append({
+        "timestamp": timestamp,
+        "country": country,
+        "query": query,
+        "pdf_url": pdf_url
+    })
+    # Keep only the last 10 searches
+    if len(st.session_state.search_history) > 10:
+        st.session_state.search_history = st.session_state.search_history[-10:]
+
+# Get country code from name
+def get_country_code(country_name):
+    try:
+        country = pycountry.countries.get(name=country_name)
+        return country.alpha_2 if country else ""
+    except:
+        return ""
+
+# Function to suggest other forms
+def suggest_other_forms():
+    """Suggest other forms from search results if current form isn't fillable"""
+    if ('search_results' in st.session_state and 
+        st.session_state.search_results and 
+        'selected_pdf' in st.session_state):
+        
+        selected_idx = st.session_state.selected_pdf
+        st.markdown("### 🔎 Try These Other Forms")
+        
+        # Display up to 5 alternative forms
+        other_forms = [r for i, r in enumerate(st.session_state.search_results[:5]) 
+                      if i != selected_idx]
+        
+        for idx, result in enumerate(other_forms):
+            title = result.get('title', 'Untitled Form')
+            link = result.get('link', '')
+            
+            st.markdown(f"**{idx+1}. {title}**")
+            if st.button(f"Try Form #{idx+1}", key=f"try_form_{idx}"):
+                with st.spinner(f"Fetching alternative form #{idx+1}..."):
+                    pdf_bytes = fetch_pdf(link)
+                    if pdf_bytes:
+                        st.session_state.pdf_bytes = pdf_bytes
+                        st.session_state.selected_pdf = idx
+                        st.session_state.form_fields = extract_form_fields(pdf_bytes)
+
 # Add this new function
 def tax_agent_response(user_query, tax_form_type=None, form_fields=None):
     """Generate an agent-like response to user tax questions using LLM"""
@@ -917,6 +872,382 @@ def tax_agent_response(user_query, tax_form_type=None, form_fields=None):
             
     except Exception as e:
         return f"I encountered an error while processing your question: {str(e)}"
+# Add this function to recommend tax form types
+def recommend_tax_form_type(user_query):
+    """Recommend appropriate tax form type based on user's situation"""
+    if not GROQ_API_KEY:
+        return ["Income Tax Return", "Sales Tax Return", "Withholding Tax Statement"]
+    
+    try:
+        prompt = f"""
+        The user is asking about Pakistani taxes: "{user_query}"
+        
+        Based on their query, which of these Pakistani tax form types would be most relevant?
+        - Income Tax Return
+        - Sales Tax Return
+        - Withholding Tax Statement
+        - Property Tax
+        - Customs Duty
+        - Advance Tax
+        - Wealth Statement
+        
+        Return only the names of the top 3 most relevant form types as a JSON array:
+        ["Form Type 1", "Form Type 2", "Form Type 3"]
+        """
+        
+        completion = groq_client.chat.completions.create(
+            model="llama3-8b-8192",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=100
+        )
+        
+        try:
+            # Parse the response as JSON
+            return json.loads(completion.choices[0].message.content)
+        except json.JSONDecodeError:
+            # Fallback to default options
+            return ["Income Tax Return", "Sales Tax Return", "Withholding Tax Statement"]
+            
+    except Exception as e:
+        return ["Income Tax Return", "Sales Tax Return", "Withholding Tax Statement"]
+# def main():
+#     st.set_page_config(page_title="LifePilot – Pakistan Taxes", page_icon="📋", layout="wide")
+#     st.title("📋 LifePilot – Pakistan Tax Assistant")
+
+#     # ── 1️⃣  user chooses how to start
+#     st.subheader("Choose how you’d like to interact:")
+#     col_a, col_b, col_c = st.columns(3)
+
+#     # Initialise session key
+#     if "mode" not in st.session_state:
+#         st.session_state.mode = None      # 0 = assistant, 1 = chatbot
+
+#     with col_a:
+#         user_query = st.text_input("💬 Simple text (we’ll auto-detect):", key="simple_text")
+
+#     with col_b:
+#         if st.button("🙋‍♂️ Assistant", use_container_width=True):
+#             st.session_state.mode = 0
+#             st.success("Assistant mode selected (0)")
+
+#     with col_c:
+#         if st.button("🗣️ Chatbot", use_container_width=True):
+#             st.session_state.mode = 1
+#             st.success("Chatbot mode selected (1)")
+
+#     # auto-detect if simple text was used
+#     if user_query and st.session_state.mode is None:
+#         with st.spinner("Analyzing your query…"):
+#             st.session_state.mode = classify_query_mode(user_query)
+#         st.success(f"Auto-detected mode: {st.session_state.mode} "
+#                    f"({'Assistant' if st.session_state.mode==0 else 'Chatbot'})")
+
+#     # If mode not yet chosen, stop here
+#     if st.session_state.mode is None:
+#         st.info("Pick a mode or type a query to continue ⬆️")
+#         st.stop()
+#         # Two main tabs: Search Forms and Upload Forms
+#     tab1, tab2, tab3 = st.tabs(["🤖 Tax Assistant", "🔍 Search Forms", "📤 Upload Form"])
+
+#     # Tab 1: Tax Assistant
+#     with tab1:
+#         st.header("Pakistan Tax Assistant")
+#         st.markdown("Ask any questions about Pakistani taxes or which forms you need.")
+        
+#         # User query input
+#         user_query = st.text_input("Ask your tax question:", placeholder="Which tax form do I need as a salaried employee?")
+        
+#         # Current form context
+#         current_form_type = None
+#         if 'form_fields' in st.session_state and st.session_state.form_fields:
+#             current_form_type = "Tax Form with fillable fields"
+        
+#         # Process query when submitted
+#         if user_query:
+#             with st.spinner("Processing your question..."):
+#                 agent_response = tax_agent_response(
+#                     user_query, 
+#                     tax_form_type=current_form_type,
+#                     form_fields=st.session_state.form_fields if 'form_fields' in st.session_state else None
+#                 )
+                
+#                 st.markdown("### Response:")
+#                 st.markdown(agent_response)
+                
+#                 # Initialize recommended_types to empty list by default
+#                 recommended_types = []
+                
+#                 # Recommend form types if needed
+#                 if "which form" in user_query.lower() or "what form" in user_query.lower() or "do i need" in user_query.lower():
+#                     st.markdown("### Recommended Form Types:")
+#                     recommended_types = recommend_tax_form_type(user_query)
+                    
+#                     # Auto-fetch the first recommended form without requiring a button click
+#                     if recommended_types:
+#                         form_type = recommended_types[0]
+#                         with st.spinner(f"Automatically fetching {form_type} forms..."):
+#                             results = serper_search(form_type, "pk")
+#                             if results:
+#                                 st.session_state.search_results = results
+#                                 st.success(f"Found {len(results)} {form_type} forms")
+                                
+#                                 # Display first result and fetch PDF automatically
+#                                 if results[0].get('link', ''):
+#                                     with st.spinner("Fetching the most relevant form..."):
+#                                         pdf_bytes = fetch_pdf(results[0].get('link', ''))
+#                                         if pdf_bytes:
+#                                             st.session_state.pdf_bytes = pdf_bytes
+#                                             st.session_state.form_fields = extract_form_fields(pdf_bytes)
+#                                             add_to_history("Pakistan", form_type, results[0].get('link', ''))
+#                                             st.success("Form fetched successfully!")
+                                            
+#                                             # Show form preview immediately
+#                                             st.markdown("### 📄 Form Preview")
+#                                             display_pdf(pdf_bytes)
+                                            
+#                                             # If form has fields, show them
+#                                             if st.session_state.form_fields:
+#                                                 st.markdown("### 📝 Form Fields")
+                                                
+#                                                 # Get field explanations if LLM is available
+#                                                 field_explanations = {}
+#                                                 if GROQ_API_KEY:
+#                                                     with st.spinner("Analyzing form fields..."):
+#                                                         explanations = explain_form_fields(
+#                                                             st.session_state.form_fields, 
+#                                                             "Pakistan", 
+#                                                             f"{form_type} form"
+#                                                         )
+#                                                         if explanations:
+#                                                             field_explanations = explanations
+                                                
+#                                                 # Display fields with explanations if available
+#                                                 if field_explanations and "sections" in field_explanations:
+#                                                     for section in field_explanations["sections"]:
+#                                                         with st.expander(f"📑 {section['name']}"):
+#                                                             st.write(section["explanation"])
+#                                                             for field_name in section["fields"]:
+#                                                                 matching_fields = [f for f in st.session_state.form_fields 
+#                                                                                 if f["name"] == field_name]
+#                                                                 if matching_fields:
+#                                                                     field = matching_fields[0]
+#                                                                     st.write(f"**{field['name']}** ({field['type']})")
+#                                                 else:
+#                                                     # Simple field display without explanations
+#                                                     for field in st.session_state.form_fields:
+#                                                         st.write(f"**{field['name']}** ({field['type']})")
+#                                         else:
+#                                             st.error("Unable to fetch this form automatically. Please try another search.")
+            
+#             # Only show buttons for all recommended types if we have any
+#             if recommended_types:
+#                 for idx, form_type in enumerate(recommended_types):
+#                     if st.button(f"Find {form_type} Forms", key=f"find_{idx}"):
+#                         # Set up search for this form type
+#                         with st.spinner(f"Searching for {form_type} forms..."):
+#                             results = serper_search(form_type, "pk")
+#                             if results:
+#                                 st.session_state.search_results = results
+#                                 st.success(f"Found {len(results)} {form_type} forms")
+                                
+#                                 # Display first result
+#                                 if results[0].get('link', ''):
+#                                     with st.spinner("Fetching the most relevant form..."):
+#                                         pdf_bytes = fetch_pdf(results[0].get('link', ''))
+#                                         if pdf_bytes:
+#                                             st.session_state.pdf_bytes = pdf_bytes
+#                                             st.session_state.form_fields = extract_form_fields(pdf_bytes)
+#                                             add_to_history("Pakistan", form_type, results[0].get('link', ''))
+#                                             st.success("Form fetched successfully!")
+                                            
+#                                             # Show form preview immediately
+#                                             st.markdown("### 📄 Form Preview")
+#                                             display_pdf(pdf_bytes)
+#                                         else:
+#                                             st.error("Unable to fetch this form. Please try another search.")
+                
+#                 # Still show buttons for all recommended types
+#                 for idx, form_type in enumerate(recommended_types):
+#                     if st.button(f"Find {form_type} Forms", key=f"find_{idx}"):
+#                         # Set up search for this form type
+#                         with st.spinner(f"Searching for {form_type} forms..."):
+#                             results = serper_search(form_type, "pk")
+#                             if results:
+#                                 st.session_state.search_results = results
+#                                 st.success(f"Found {len(results)} {form_type} forms")
+                                
+#                                 # Display first result
+#                                 if results[0].get('link', ''):
+#                                     with st.spinner("Fetching the most relevant form..."):
+#                                         pdf_bytes = fetch_pdf(results[0].get('link', ''))
+#                                         if pdf_bytes:
+#                                             st.session_state.pdf_bytes = pdf_bytes
+#                                             st.session_state.form_fields = extract_form_fields(pdf_bytes)
+#                                             add_to_history("Pakistan", form_type, results[0].get('link', ''))
+#                                             st.success("Form fetched successfully!")
+                                            
+#                                             # Show form preview immediately
+#                                             st.markdown("### 📄 Form Preview")
+#                                             display_pdf(pdf_bytes)
+#                                         else:
+#                                             st.error("Unable to fetch this form. Please try another search.")
+    
+#     # Tab 2: Search Forms (modified version of original tab1)
+#     with tab2:
+#         # Set Pakistan as default country
+#         country = "Pakistan"
+#         st.info("🇵🇰 This application is focused on Pakistani tax forms.")
+        
+#         # Form type selection
+#         form_type = st.selectbox(
+#             "📝 What tax form are you looking for?",
+#             ["Income Tax Return", "Sales Tax Return", "Withholding Tax Statement", 
+#             "Property Tax", "Customs Duty", "Advance Tax", "Wealth Statement"]
+#         )
+        
+#         # Additional form details for search refinement
+#         custom_query = st.text_input(
+#             "✏️ Specific form or additional details:", 
+#             placeholder="e.g., Salaried individuals, business income, etc."
+#         )
+        
+#         # Build the search query
+#         search_query = custom_query if custom_query else form_type
+        
+#         # Search button
+#         search_button = st.button("🔍 Search for Pakistani Tax Forms", use_container_width=True)
+    
+#         # Only show search results when search button is clicked
+#         if search_button:
+#             with st.spinner("Searching for Pakistani tax forms..."):
+#                 # Perform search
+#                 results = serper_search(search_query, "pk")
+                
+#                 if results:
+#                     # Try to analyze results with LLM if available
+#                     if GROQ_API_KEY:
+#                         results, analysis = analyze_search_results(results, search_query, "Pakistan")
+                        
+#                         # Show LLM analysis if available
+#                         if analysis and isinstance(analysis, dict):
+#                             best_idx = analysis.get("best_result_index", -1)
+#                             if best_idx >= 0 and best_idx < len(results):
+#                                 st.success(f"✅ Found: {analysis.get('form_name', 'Tax Form')}")
+#                                 st.info(analysis.get('form_description', ''))
+                                
+#                                 # If additional forms are suggested
+#                                 additional = analysis.get('additional_forms', [])
+#                                 if additional:
+#                                     st.markdown("**You might also need:**")
+#                                     for form in additional:
+#                                         st.markdown(f"- {form}")
+                    
+#                     # Display results in a cleaner format
+#                     st.markdown("### 📋 Found Forms")
+                    
+#                     for idx, result in enumerate(results[:5]):
+#                         title = result.get('title', 'Untitled Form')
+#                         link = result.get('link', '')
+#                         snippet = result.get('snippet', '')
+                        
+#                         with st.container():
+#                             st.subheader(f"{idx+1}. {title}")
+#                             st.write(snippet)
+                            
+#                             # Get button and Download PDF button side by side
+#                             col1, col2 = st.columns(2)
+                            
+#                             with col1:
+#                                 # Replace Select Form button with Get Form button
+#                                 pdf_bytes = fetch_pdf(link)
+#                                 if pdf_bytes:
+#                                     st.session_state.pdf_bytes = pdf_bytes
+#                                     st.session_state.form_fields = extract_form_fields(pdf_bytes)
+#                                     add_to_history("Pakistan", search_query, link)
+#                                     st.success("Form fetched successfully!")
+#                                 else:
+#                                     st.error("Unable to fetch this form. Please try another.")        
+                            
+#                             with col2:
+#                                 # Direct link to open in new tab
+#                                 st.markdown(
+#                                     f"""<a href="{link}" target="_blank">
+#                                             <button style="background-color:#4CAF50;color:white;padding:6px 12px;
+#                                                         border:none;border-radius:4px;cursor:pointer;width:100%;">
+#                                                 👁️ View Original
+#                                             </button>
+#                                     </a>""",
+#                                     unsafe_allow_html=True
+#                                 )
+                            
+#                             st.divider()
+#                 else:
+#                     st.warning("No results found. Try different search terms.")
+        
+#         # Display the PDF directly if it exists in session state
+#         if 'pdf_bytes' in st.session_state and st.session_state.pdf_bytes:
+#             st.markdown("### 📄 Form Preview")
+#             display_pdf(st.session_state.pdf_bytes)
+            
+#             # If form has fields, show them
+#             if 'form_fields' in st.session_state and st.session_state.form_fields:
+#                 st.markdown("### 📝 Form Fields")
+                
+#                 # Get field explanations if LLM is available
+#                 field_explanations = {}
+#                 if GROQ_API_KEY:
+#                     with st.spinner("Analyzing form fields..."):
+#                         explanations = explain_form_fields(
+#                             st.session_state.form_fields, 
+#                             "Pakistan", 
+#                             f"{form_type} form"
+#                         )
+#                         if explanations:
+#                             field_explanations = explanations
+                
+#                 # Display fields with explanations if available
+#                 if field_explanations and "sections" in field_explanations:
+#                     for section in field_explanations["sections"]:
+#                         with st.expander(f"📑 {section['name']}"):
+#                             st.write(section["explanation"])
+#                             for field_name in section["fields"]:
+#                                 matching_fields = [f for f in st.session_state.form_fields 
+#                                                 if f["name"] == field_name]
+#                                 if matching_fields:
+#                                     field = matching_fields[0]
+#                                     st.write(f"**{field['name']}** ({field['type']})")
+#                 else:
+#                     # Simple field display without explanations
+#                     for field in st.session_state.form_fields:
+#                         st.write(f"**{field['name']}** ({field['type']})")
+            
+#                 # Option to fill form
+#                 st.markdown("### ✏️ Fill This Form")
+#                 st.info("This feature will help you fill in the form fields.")
+                
+#                 if st.button("Start Filling Form"):
+#                     st.session_state.is_filling = True
+#             else:
+#                 st.warning("⚠️ This form doesn't have fillable fields. It may be a scanned document or not an interactive form.")
+#                 st.info("You can still view and download the form, but automatic filling isn't available.")
+                
+#                 # Option to download the non-fillable form
+#                 st.download_button(
+#                     label="📥 Download Form",
+#                     data=st.session_state.pdf_bytes,
+#                     file_name="pakistan_tax_form.pdf",
+#                     mime="application/pdf"
+#                 )
+                
+#                 # Add a question and answer section for this form
+#                 st.markdown("### ❓ Questions about this form?")
+#                 form_question = st.text_input("Ask a question about this form:", key="form_question_input")
+                
+#                 if form_question:
+#                     with st.spinner("Getting answer..."):
+#                         form_response = tax_agent_response(form_question, tax_form_type=form_type)
+#                         st.markdown(form_response)
 
 def main():
     st.set_page_config(
@@ -995,87 +1326,18 @@ def main():
 
                 fill_decision = st.radio("Choose an option:", ["No", "Yes"], index=0, horizontal=True)
                 if fill_decision == "Yes":
-                    # form_titles = [title for title, _ in form_links]
-                    # selected_forms = st.multiselect("Select the forms to fill:", options=form_titles)
+                    form_titles = [title for title, _ in form_links]
+                    selected_forms = st.multiselect("Select the forms to fill:", options=form_titles)
 
-                    # selected_links = [link for title, link in form_links if title in selected_forms]
-                    form_options = {
-                        "FBR Tax Registration": "https://www.sindheducation.gov.pk/Contents/Careers/APPLICATION%20FORM%20ME.pdf",
-                        "Property Registration (Sindh)": "https://www.sindheducation.gov.pk/Contents/Careers/APPLICATION%20FORM%20ME.pdf"
-                    }
+                    selected_links = [link for title, link in form_links if title in selected_forms]
 
-                    selected_form = st.selectbox("Select the form you want to fill:", list(form_options.keys()))
-                    form_url = form_options[selected_form]
+                    if selected_links:
+                        st.success("✅ Forms selected for autofill. Processing...")
+                        # Call your next processing function here using selected_links
 
-
-                    if form_url:
-                      try:
-                        form_resp = requests.get(form_url)
-                        form_bytes = form_resp.content
-                        st.success("✅ Form downloaded successfully")
-                      except Exception as e:
-                          st.error(f"❌ Failed to download form: {e}")
-                          form_bytes = None
-
-                      if form_bytes:
-                          reader = PdfReader(io.BytesIO(form_bytes))
-                          acro_fields = extract_acroform_fields(reader)
-
-                          if acro_fields:
-                              print("\n📝 AcroForm Fields Detected:")
-                              for field in acro_fields:
-                                  print(f"• {field}")
-                              mode = input("Enter data manually or upload info PDF? [1=Manual, 2=Upload]: ")
-                              user_data = {}
-                              if mode == "1":
-                                  for field in acro_fields:
-                                      user_data[field] = input(f"{field}: ")
-                              else:
-                                  print("📤 Upload your data PDF:")
-                                  uploaded = files.upload()
-                                  uploaded_file = next(iter(uploaded.values()))
-                                  text = extract_text_from_pdf(uploaded_file)
-                                  user_data = extract_info_from_text(text, acro_fields)
-
-                              filled_pdf = fill_pdf_acroform(form_bytes, user_data)
-                              with open("filled_form.pdf", "wb") as f:
-                                  f.write(filled_pdf.read())
-                              files.download("filled_form.pdf")
-
-                          else:
-                              print("⚠️ No AcroForm fields. Switching to smart flat-form filling.")
-                              labels = extract_labels_from_text(form_bytes)  # ✅ FIXED
-
-                              print("\n📋 Detected form labels:", labels)
-                              print("📤 Upload your data PDF:")
-                              uploaded = files.upload()
-                              uploaded_file = next(iter(uploaded.values()))
-                              print("uploaded file")
-                              user_text = extract_text_from_pdf(uploaded_file)
-                              print("user_text",user_text)
-                              if not user_text.strip():
-                                  user_text = extract_text_with_ocr(uploaded_file)
-
-                              # raw_user_data = extract_all_fields_from_text(user_text)
-                              print("\n🔍 Extracted:", user_text,labels)
-                              raw_user_data = extract_all_fields_from_text(user_text)
-                              print("raw_user_data",raw_user_data)
-                              field_mapping = get_field_mapping_from_llm(labels, raw_user_data)
-                              print("field_mapping from function",field_mapping)
-
-                              final_user_data = reconstruct_user_data(field_mapping, raw_user_data)
-                              # field_mapping = get_field_mapping_from_llm(labels, user_text)
-                              # final_user_data = reconstruct_user_data(field_mapping, user_text)
-                              print("final_user_data",final_user_data)
-                              auto_fill_flat_pdf_smart(form_bytes, "smart_filled_form.pdf", final_user_data)
-                              st.success("✅ Forms selected for autofill. Processing...")
-                      else:
-                          print("👍 You can fill the form manually:")
-           
     else:
         st.info("Please enter a question to begin.")
 
 # Run the app
 if __name__ == "__main__":
     main()
-  
