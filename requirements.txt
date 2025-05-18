@@ -1,12 +1,7 @@
-PyMuPDF
 streamlit
-PyPDF2
-pdfplumber
-pytesseract
-pdf2image
-python-dotenv
 requests
-fitz
+PyMuPDF
 beautifulsoup4
-groq
+python-dotenv
 pycountry
+groq
