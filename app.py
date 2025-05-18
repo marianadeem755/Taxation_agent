@@ -12,7 +12,7 @@ from google.colab import files
 # Load environment variables
 load_dotenv()
 GROQ_API_KEY = "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"
-# groq_client = Groq(api_key=GROQ_API_KEY)
+groq_client = Groq(api_key=GROQ_API_KEY)
 SERPER_API_KEY = "eda2304d1c64119adc895570dbeae09f2a1cc07a"
 # client = Groq(api_key=os.environ["GROQ_API_KEY"])
 MODEL = "llama3-8b-8192"
@@ -181,7 +181,7 @@ Example:
   ...
 }}
 """
-    response = client.chat.completions.create(
+    response = groq_client.chat.completions.create(
         model=MODEL,
         messages=[
             {"role": "system", "content": "You are a form-matching assistant."},
@@ -502,22 +502,6 @@ def find_pdf_in_html_page(url, html_content=None):
         st.error(f"Error finding PDF links: {str(e)}")
         return None
 
-# Display PDF safely with error handling
-def display_pdf(file_bytesio):
-    try:
-        file_bytesio.seek(0)
-        base64_pdf = base64.b64encode(file_bytesio.read()).decode('utf-8')
-        pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800" type="application/pdf"></iframe>'
-        st.markdown(pdf_display, unsafe_allow_html=True)
-        st.success("PDF loaded successfully!")
-        
-        # Add a direct download option for better user experience
-        file_bytesio.seek(0)
-    except Exception as e:
-        st.error(f"Error displaying PDF: {str(e)}")
-        st.info("If the PDF isn't displaying, you can try using the direct link.")
-
-
 # Extract interactive fields from PDF
 def extract_form_fields(file_bytesio):
     try:
@@ -602,38 +586,6 @@ def explain_form_fields(fields, country, form_name):
         st.error(f"Error explaining form fields: {str(e)}")
         return {}
 
-# Fill PDF form with user data
-def fill_pdf_form(file_bytesio, field_values):
-    try:
-        file_bytesio.seek(0)
-        doc = fitz.open(stream=file_bytesio, filetype="pdf")
-        
-        # Fill in the form fields
-        for page in doc:
-            widgets = page.widgets()
-            for widget in widgets:
-                field_name = widget.field_name
-                if field_name in field_values:
-                    widget.field_value = field_values[field_name]
-                    widget.update()
-        
-        # Save to a temporary file
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-        doc.save(temp_file.name)
-        doc.close()
-        
-        # Read the saved file back
-        with open(temp_file.name, "rb") as f:
-            filled_pdf = BytesIO(f.read())
-        
-        # Clean up
-        os.unlink(temp_file.name)
-        
-        return filled_pdf
-    except Exception as e:
-        st.error(f"Error filling form: {str(e)}")
-        return None
-
 # Add to search history
 def add_to_history(country, query, pdf_url=None):
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -646,14 +598,6 @@ def add_to_history(country, query, pdf_url=None):
     # Keep only the last 10 searches
     if len(st.session_state.search_history) > 10:
         st.session_state.search_history = st.session_state.search_history[-10:]
-
-# Get country code from name
-def get_country_code(country_name):
-    try:
-        country = pycountry.countries.get(name=country_name)
-        return country.alpha_2 if country else ""
-    except:
-        return ""
 
 # Function to suggest other forms
 def suggest_other_forms():
@@ -921,186 +865,6 @@ def find_pdf_in_html_page(url, html_content=None):
         st.error(f"Error finding PDF links: {str(e)}")
         return None
 
-# Display PDF safely with error handling
-def display_pdf(file_bytesio):
-    try:
-        file_bytesio.seek(0)
-        base64_pdf = base64.b64encode(file_bytesio.read()).decode('utf-8')
-        pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800" type="application/pdf"></iframe>'
-        st.markdown(pdf_display, unsafe_allow_html=True)
-        st.success("PDF loaded successfully!")
-        
-        # Add a direct download option for better user experience
-        file_bytesio.seek(0)
-    except Exception as e:
-        st.error(f"Error displaying PDF: {str(e)}")
-        st.info("If the PDF isn't displaying, you can try using the direct link.")
-
-
-# Extract interactive fields from PDF
-def extract_form_fields(file_bytesio):
-    try:
-        file_bytesio.seek(0)
-        doc = fitz.open(stream=file_bytesio, filetype="pdf")
-        
-        fields = []
-        widget_types = {
-            fitz.PDF_WIDGET_TYPE_TEXT: "Text Field",
-            fitz.PDF_WIDGET_TYPE_CHECKBOX: "Checkbox",
-            fitz.PDF_WIDGET_TYPE_RADIOBUTTON: "Radio Button",
-            fitz.PDF_WIDGET_TYPE_COMBOBOX: "Dropdown",
-            fitz.PDF_WIDGET_TYPE_LISTBOX: "List Box"
-        }
-        
-        for page_num, page in enumerate(doc):
-            widgets = page.widgets()
-            for widget in widgets:
-                field_type = widget_types.get(widget.field_type, "Unknown")
-                field_info = {
-                    "name": widget.field_name or f"Field_{page_num}_{len(fields)}",
-                    "type": field_type,
-                    "value": widget.field_value,
-                    "options": widget.choice_values if hasattr(widget, "choice_values") else None,
-                    "page": page_num + 1
-                }
-                fields.append(field_info)
-        
-        return fields
-    except Exception as e:
-        st.error(f"Error extracting form fields: {str(e)}")
-        return []
-
-# Use LLM to explain form fields
-def explain_form_fields(fields, country, form_name):
-    if not GROQ_API_KEY or not fields:
-        return {}
-        
-    try:
-        fields_json = json.dumps(fields, indent=2)
-        
-        prompt = f"""
-        These are form fields from a tax form ({form_name}) from {country}:
-        {fields_json}
-        
-        Please analyze these fields and:
-        1. Group them into logical sections (personal info, income, deductions, etc.)
-        2. Explain any technical tax terms in simple language
-        3. Identify which fields are mandatory vs. optional if possible
-        
-        Format your response as JSON with the following structure:
-        {{
-            "sections": [
-                {{
-                    "name": "section name",
-                    "fields": ["field1", "field2"],
-                    "explanation": "explanation of this section"
-                }}
-            ],
-            "key_terms": {{
-                "term1": "simple explanation",
-                "term2": "simple explanation"
-            }},
-            "mandatory_fields": ["field1", "field2"]
-        }}
-        """
-        
-        completion = groq_client.chat.completions.create(
-            model="llama3-8b-8192",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
-            max_tokens=1000
-        )
-        
-        try:
-            explanation = json.loads(completion.choices[0].message.content)
-            return explanation
-        except json.JSONDecodeError:
-            return {}
-            
-    except Exception as e:
-        st.error(f"Error explaining form fields: {str(e)}")
-        return {}
-
-# Fill PDF form with user data
-def fill_pdf_form(file_bytesio, field_values):
-    try:
-        file_bytesio.seek(0)
-        doc = fitz.open(stream=file_bytesio, filetype="pdf")
-        
-        # Fill in the form fields
-        for page in doc:
-            widgets = page.widgets()
-            for widget in widgets:
-                field_name = widget.field_name
-                if field_name in field_values:
-                    widget.field_value = field_values[field_name]
-                    widget.update()
-        
-        # Save to a temporary file
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-        doc.save(temp_file.name)
-        doc.close()
-        
-        # Read the saved file back
-        with open(temp_file.name, "rb") as f:
-            filled_pdf = BytesIO(f.read())
-        
-        # Clean up
-        os.unlink(temp_file.name)
-        
-        return filled_pdf
-    except Exception as e:
-        st.error(f"Error filling form: {str(e)}")
-        return None
-
-# Add to search history
-def add_to_history(country, query, pdf_url=None):
-    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    st.session_state.search_history.append({
-        "timestamp": timestamp,
-        "country": country,
-        "query": query,
-        "pdf_url": pdf_url
-    })
-    # Keep only the last 10 searches
-    if len(st.session_state.search_history) > 10:
-        st.session_state.search_history = st.session_state.search_history[-10:]
-
-# Get country code from name
-def get_country_code(country_name):
-    try:
-        country = pycountry.countries.get(name=country_name)
-        return country.alpha_2 if country else ""
-    except:
-        return ""
-
-# Function to suggest other forms
-def suggest_other_forms():
-    """Suggest other forms from search results if current form isn't fillable"""
-    if ('search_results' in st.session_state and 
-        st.session_state.search_results and 
-        'selected_pdf' in st.session_state):
-        
-        selected_idx = st.session_state.selected_pdf
-        st.markdown("### 🔎 Try These Other Forms")
-        
-        # Display up to 5 alternative forms
-        other_forms = [r for i, r in enumerate(st.session_state.search_results[:5]) 
-                      if i != selected_idx]
-        
-        for idx, result in enumerate(other_forms):
-            title = result.get('title', 'Untitled Form')
-            link = result.get('link', '')
-            
-            st.markdown(f"**{idx+1}. {title}**")
-            if st.button(f"Try Form #{idx+1}", key=f"try_form_{idx}"):
-                with st.spinner(f"Fetching alternative form #{idx+1}..."):
-                    pdf_bytes = fetch_pdf(link)
-                    if pdf_bytes:
-                        st.session_state.pdf_bytes = pdf_bytes
-                        st.session_state.selected_pdf = idx
-                        st.session_state.form_fields = extract_form_fields(pdf_bytes)
-
 # Add this new function
 def tax_agent_response(user_query, tax_form_type=None, form_fields=None):
     """Generate an agent-like response to user tax questions using LLM"""
@@ -1153,45 +917,6 @@ def tax_agent_response(user_query, tax_form_type=None, form_fields=None):
             
     except Exception as e:
         return f"I encountered an error while processing your question: {str(e)}"
-# Add this function to recommend tax form types
-def recommend_tax_form_type(user_query):
-    """Recommend appropriate tax form type based on user's situation"""
-    if not GROQ_API_KEY:
-        return ["Income Tax Return", "Sales Tax Return", "Withholding Tax Statement"]
-    
-    try:
-        prompt = f"""
-        The user is asking about Pakistani taxes: "{user_query}"
-        
-        Based on their query, which of these Pakistani tax form types would be most relevant?
-        - Income Tax Return
-        - Sales Tax Return
-        - Withholding Tax Statement
-        - Property Tax
-        - Customs Duty
-        - Advance Tax
-        - Wealth Statement
-        
-        Return only the names of the top 3 most relevant form types as a JSON array:
-        ["Form Type 1", "Form Type 2", "Form Type 3"]
-        """
-        
-        completion = groq_client.chat.completions.create(
-            model="llama3-8b-8192",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
-            max_tokens=100
-        )
-        
-        try:
-            # Parse the response as JSON
-            return json.loads(completion.choices[0].message.content)
-        except json.JSONDecodeError:
-            # Fallback to default options
-            return ["Income Tax Return", "Sales Tax Return", "Withholding Tax Statement"]
-            
-    except Exception as e:
-        return ["Income Tax Return", "Sales Tax Return", "Withholding Tax Statement"]
 
 def main():
     st.set_page_config(
@@ -1346,14 +1071,7 @@ def main():
                               st.success("✅ Forms selected for autofill. Processing...")
                       else:
                           print("👍 You can fill the form manually:")
-                          
-                          
-
-
-    
-
-                        
-                      
+           
     else:
         st.info("Please enter a question to begin.")
 
