@@ -1,11 +1,10 @@
 streamlit
-PyPDF2
+PyMuPD
 pdfplumber
 pytesseract
 pdf2image
 python-dotenv
 requests
-fitz
 beautifulsoup4
 groq
 pycountry
