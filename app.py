@@ -1,7 +1,6 @@
 # =========================================
 # 📋  CELL 2 — write the whole Streamlit app
 # =========================================
-%%writefile app.py
 import streamlit as st
 import os, json, time, base64, tempfile
 from io import BytesIO
