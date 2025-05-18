@@ -1,4 +1,4 @@
-PyMuPD
+PyMuPDF
 streamlit
 PyPDF2
 pdfplumber
