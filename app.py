@@ -14,8 +14,10 @@ from groq import Groq
 # 🔐  load API keys
 # ─────────────────────────────────────────
 load_dotenv()
-SERPER_API_KEY = "0bf2fc534d73bd7c190fc4b856c1887951511984"
-GROQ_API_KEY = "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"
+# Get the API keys
+SERPER_API_KEY = os.getenv("SERPER_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+# Use the keys
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 
@@ -1340,3 +1342,4 @@ def main():
 # Run the app
 if __name__ == "__main__":
     main()
+
